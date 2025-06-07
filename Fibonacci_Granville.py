@@ -8,9 +8,9 @@ from matplotlib.patches import Rectangle
 # 連接 SQL Server 資料庫
 conn = pymssql.connect(
     host="127.0.0.1",
-    user="***",
-    password="***",
-    database="***",
+    user="MSI/user2",
+    password="ezshun0719",
+    database="ncu_database",
     charset="utf8"
 )
 cursor = conn.cursor()
@@ -18,9 +18,9 @@ cursor = conn.cursor()
 # 使用者輸入股票代碼
 stock_code = input("請輸入股票代碼: ").strip()
 
-# 查詢資料（包含MA20和其他繪圖所需欄位）
+# 查詢資料（包含MA20、KD值和其他繪圖所需欄位）
 cursor.execute("""
-    SELECT [Date], [Open], [Close], [High], [Low], [Volume], [MA20]
+    SELECT [Date], [Open], [Close], [High], [Low], [Volume], [MA20], [K_Value], [D_Value]
     FROM StockTrading_TA
     WHERE StockCode = %s
     ORDER BY [Date] ASC
@@ -33,7 +33,7 @@ rows = [tuple(row) for row in cursor.fetchall()]
 df = pd.DataFrame(rows, columns=column_names)
 
 # 將欄位名稱標準化
-df.rename(columns={"Date": "date", "Close": "close", "Volume": "volume", "Open": "open", "High": "high", "Low": "low"}, inplace=True)
+df.rename(columns={"Date": "date", "Close": "close", "Volume": "volume", "Open": "open", "High": "high", "Low": "low", "K_Value": "K", "D_Value": "D"}, inplace=True)
 df['date'] = pd.to_datetime(df['date'])
 df.set_index('date', inplace=True)
 
@@ -111,15 +111,6 @@ def detect_fibonacci_signals(df, tolerance=0.015):
 def detect_granville_signals(df, window_size=6, max_break_days=3):
     """
     檢測Granville Rule 2 (假跌破) 和 Rule 6 (假突破) 信號
-    
-    Args:
-        df: 包含date(index), close, MA20, RSI, volume, MA_volume欄位的DataFrame
-        window_size: 觀察窗口大小，預設6天
-        max_break_days: 最大跌破/突破天數，預設3天
-    
-    Returns:
-        granville_buy_signals: Rule 2 買入信號列表
-        granville_sell_signals: Rule 6 賣出信號列表
     """
     granville_buy_signals = []
     granville_sell_signals = []
@@ -264,50 +255,57 @@ if total_before_dedup > total_after_dedup:
 
 # 畫圖
 print(f"\n=== 開始繪製技術分析圖表 ===")
-fig, ax = plt.subplots(figsize=(16, 8))
+
+# 檢查KD資料
+has_kd = 'K' in df.columns and 'D' in df.columns and df['K'].notna().sum() > 0 and df['D'].notna().sum() > 0
+
+if has_kd:
+    print("✅ 檢測到KD資料，使用雙面板圖表")
+    print(f"K值範圍: {df['K'].min():.2f} - {df['K'].max():.2f}")
+    print(f"D值範圍: {df['D'].min():.2f} - {df['D'].max():.2f}")
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 12), height_ratios=[2, 1], sharex=True)
+else:
+    print("❌ 無KD資料，使用單面板圖表")
+    fig, ax1 = plt.subplots(figsize=(16, 8))
+    ax2 = None
+
 candlestick_width = 0.6
 
-# 畫 K 線
+# 上圖：主要價格圖表
 for date, row in df.iterrows():
     color = 'red' if row['close'] > row['open'] else 'green'
-    ax.add_patch(Rectangle(
+    ax1.add_patch(Rectangle(
         (mdates.date2num(date) - candlestick_width / 2, min(row['open'], row['close'])),
         candlestick_width,
         abs(row['close'] - row['open']),
         color=color,
         zorder=2
     ))
-    ax.plot([date, date], [row['low'], row['high']], color=color, linewidth=1, zorder=1)
+    ax1.plot([date, date], [row['low'], row['high']], color=color, linewidth=1, zorder=1)
 
 # MA20
-ax.plot(df.index, df['MA20'], label='MA20', color='orange', linewidth=2)
+ax1.plot(df.index, df['MA20'], label='MA20', color='orange', linewidth=2)
 
 # 全域Fibonacci回撤線
 for label, level in retracements.items():
-    ax.hlines(y=level, xmin=df.index[0], xmax=df.index[-1], 
+    ax1.hlines(y=level, xmin=df.index[0], xmax=df.index[-1], 
               colors='purple', linestyles='-', linewidth=1.5, alpha=0.8, 
               label=f'Fib {label}')
 
 # 標記買賣信號
 buy_dates = [signal[0] for signal in final_buy_signals]
-buy_prices = [signal[1] for signal in final_buy_signals]
 sell_dates = [signal[0] for signal in final_sell_signals]
-sell_prices = [signal[1] for signal in final_sell_signals]
 
-# 為了讓信號標記更清楚，計算K棒的上下位置
 if buy_dates:
     # 買入信號：放在K棒下方
     buy_display_prices = []
     for date in buy_dates:
         if date in df.index:
             low_price = df.loc[date, 'low']
-            # 在最低價下方留一點空間
-            offset = (df['high'].max() - df['low'].min()) * 0.02  # 2%的偏移
+            offset = (df['high'].max() - df['low'].min()) * 0.02
             buy_display_prices.append(low_price - offset)
-        else:
-            buy_display_prices.append(buy_prices[buy_dates.index(date)])
     
-    ax.scatter(buy_dates, buy_display_prices, marker='^', color='blue', edgecolors='white',
+    ax1.scatter(buy_dates, buy_display_prices, marker='^', color='blue', edgecolors='white',
                s=80, linewidths=1, label='Buy Signal', zorder=5)
 
 if sell_dates:
@@ -316,28 +314,84 @@ if sell_dates:
     for date in sell_dates:
         if date in df.index:
             high_price = df.loc[date, 'high']
-            # 在最高價上方留一點空間
-            offset = (df['high'].max() - df['low'].min()) * 0.02  # 2%的偏移
+            offset = (df['high'].max() - df['low'].min()) * 0.02
             sell_display_prices.append(high_price + offset)
-        else:
-            sell_display_prices.append(sell_prices[sell_dates.index(date)])
     
-    ax.scatter(sell_dates, sell_display_prices, marker='v', color='red', edgecolors='white',
+    ax1.scatter(sell_dates, sell_display_prices, marker='v', color='red', edgecolors='white',
                s=80, linewidths=1, label='Sell Signal', zorder=5)
 
-# 格式化圖表
-ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
-plt.xticks(rotation=45)
-ax.set_title(f"{stock_code} Fibonacci + Granville", fontsize=14)
-ax.set_ylabel("Price")
+# 格式化上圖
+ax1.set_title(f"{stock_code} Fibonacci + Granville", fontsize=14)
+ax1.set_ylabel("Price")
+ax1.grid(True, alpha=0.3)
 
 # 圖例
-handles, labels = ax.get_legend_handles_labels()
+handles, labels = ax1.get_legend_handles_labels()
 by_label = dict(zip(labels, handles))
-ax.legend(by_label.values(), by_label.keys(), bbox_to_anchor=(1.05, 1), loc='upper left')
+ax1.legend(by_label.values(), by_label.keys(), bbox_to_anchor=(1.05, 1), loc='upper left')
 
-plt.grid(True, alpha=0.3)
+# 下圖：KD指標
+if has_kd and ax2 is not None:
+    print("📊 繪製KD指標圖...")
+    
+    # 繪製K線和D線
+    ax2.plot(df.index, df['K'], label='K', color='blue', linewidth=1.5)
+    ax2.plot(df.index, df['D'], label='D', color='red', linewidth=1.5)
+    
+    # KD參考線
+    ax2.axhline(y=80, color='gray', linestyle='--', alpha=0.7, label='Overbought(80)')
+    ax2.axhline(y=20, color='gray', linestyle='--', alpha=0.7, label='Oversold(20)')
+    ax2.axhline(y=50, color='gray', linestyle=':', alpha=0.5)
+    
+    # 在KD圖上標記買賣信號點
+    if buy_dates:
+        valid_buy_dates = []
+        buy_k_values = []
+        for date in buy_dates:
+            if date in df.index and pd.notna(df.loc[date, 'K']):
+                valid_buy_dates.append(date)
+                buy_k_values.append(df.loc[date, 'K'])
+        
+        if valid_buy_dates:
+            ax2.scatter(valid_buy_dates, buy_k_values, marker='o', color='blue', 
+                       s=60, edgecolors='white', linewidths=1, zorder=5, alpha=0.8)
+            print(f"標記了 {len(valid_buy_dates)} 個買入信號點")
+    
+    if sell_dates:
+        valid_sell_dates = []
+        sell_k_values = []
+        for date in sell_dates:
+            if date in df.index and pd.notna(df.loc[date, 'K']):
+                valid_sell_dates.append(date)
+                sell_k_values.append(df.loc[date, 'K'])
+        
+        if valid_sell_dates:
+            ax2.scatter(valid_sell_dates, sell_k_values, marker='o', color='red', 
+                       s=60, edgecolors='white', linewidths=1, zorder=5, alpha=0.8)
+            print(f"標記了 {len(valid_sell_dates)} 個賣出信號點")
+    
+    ax2.set_ylabel("KD Value")
+    ax2.set_ylim(0, 100)
+    ax2.legend(loc='upper left')
+    ax2.grid(True, alpha=0.3)
+    ax2.set_title("KD Stochastic Oscillator", fontsize=12)
+
+# X軸格式化
+if has_kd and ax2 is not None:
+    # 雙面板：只在下圖顯示X軸標籤
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    ax1.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax1.set_xticklabels([])  # 隱藏上圖的X軸標籤
+    
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    ax2.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
+else:
+    # 單面板：在主圖顯示X軸標籤
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+    ax1.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
+
 plt.tight_layout()
 plt.show()
 
