@@ -329,7 +329,7 @@ if sell_dates:
 ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
 ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
 plt.xticks(rotation=45)
-ax.set_title(f"{stock_code} Fibonacci + Granville 整合策略", fontsize=14)
+ax.set_title(f"{stock_code} Fibonacci + Granville", fontsize=14)
 ax.set_ylabel("Price")
 
 # 圖例
